@@ -1,6 +1,14 @@
 # GRAIL-DX
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![Scala 3](https://img.shields.io/badge/Scala-3.6+-red.svg)](https://www.scala-lang.org/)
 
-GRAIL-DX is a Scala 3 framework for automatically localizing functional faults in deployed software applications. The name stands for Graph Reasoning And Abductive Inference for Differential Diagnosis. A stakeholder enters symptoms of a failure, input values, configuration values, and deployment context. GRAIL-DX returns likely source code or configuration locations, explains how the suspected fault can propagate to the observed failure, and proposes repairs or differential diagnosis experiments.
+**G**raph **R**easoning And **A**bductive **I**nference with **L**LMs for **D**ifferential **D**iagnosis
+
+---
+### **Author:** [Dr. Mark Grechanik](http://www.cs.uic.edu/~drmark/) • 📧 [Email 0x1DOCD00D](mailto:0x1DOCD00D@drmark.tech)
+
+
+GRAIL-DX is a Scala 3 framework for automatically localizing functional faults in deployed software applications. A stakeholder enters symptoms of a failure, input values, configuration values, and deployment context. GRAIL-DX returns likely source code or configuration locations, explains how the suspected fault can propagate to the observed failure, and proposes repairs or differential diagnosis experiments. GRAIL-DX is a subproject of Abductive Reasoning on Graphs for Unified Symptom Differential Diagnosis, [ARGUS-DX](https://drmark.tech/research/llm-fault-diagnosis) that studies how _large language models (LLMs)_ can be augmented with application specific evidence through retrieval augmented generation, graph reasoning, and differential diagnosis to pinpoint faults in complex systems. Within this broader program, GRAIL-DX focuses specifically on software fault localization, using static analysis, dynamic traces, injected faults, configuration artifacts, and GraphRAG to help LLMs reason from observed symptoms back to likely source code, bytecode, LLVM IR, or cloud configuration faults.
 
 GRAIL-DX targets Java, Scala, and LLVM based applications. For JVM applications, GRAIL-DX analyzes source code, bytecode, tests, runtime traces, and configuration artifacts. For LLVM based applications, GRAIL-DX analyzes source code, LLVM IR, native execution traces, compiler level instrumentation, and configuration artifacts. The goal is to support applications whose executable behavior can be connected back to analyzable program structure.
 
@@ -25,6 +33,7 @@ GRAIL-DX can work with cloud based LLMs and local LLMs. Cloud based models such 
 - [Step eight. Compute differential traces](#step-eight-compute-differential-traces)
 - [Step nine. Build the evidence graph and vector index](#step-nine-build-the-evidence-graph-and-vector-index)
 - [Step 10. Expose analysis tools to the LLM](#step-10-expose-analysis-tools-to-the-llm)
+- [Step 10A. Invoke external tools through MCP subagents](#step-10a-invoke-external-tools-through-mcp-subagents)
 - [Step 11. Implement the ReAct codebase analysis agent](#step-11-implement-the-react-codebase-analysis-agent)
 - [Step 12. Implement the abductive diagnosis agent](#step-12-implement-the-abductive-diagnosis-agent)
 - [Step 13. Add symbolic path checking](#step-13-add-symbolic-path-checking)
@@ -418,6 +427,102 @@ The tool request format is shown below.
 
 This step is required because the LLM must obtain evidence rather than fabricate it. The diagnosis agent will call these tools whenever it needs source structure, dynamic evidence, graph paths, symbolic results, mutation history, bytecode facts, LLVM IR facts, or JADIDA runtime dataflow facts.
 
+## Step 10A. Invoke external tools through MCP subagents
+
+GRAIL-DX should use the Model Context Protocol, abbreviated as MCP, as the standard mechanism for invoking external tools from ReAct subagents. MCP gives GRAIL-DX a disciplined way to connect LLM based agents to analyzers, databases, repositories, trace stores, graph services, symbolic checkers, build systems, and experiment runners without hard wiring every integration into the main diagnosis loop.
+
+The purpose of MCP in GRAIL-DX is not to replace the internal Scala 3 tool registry. The purpose is to expose internal and external capabilities through a uniform protocol so that subagents can discover tools, request resources, execute actions, and receive structured results. This keeps the ReAct loop grounded in actual evidence instead of asking the LLM to infer missing facts.
+
+The GRAIL-DX host should run the main diagnosis workflow. It should create ReAct subagents for specialized tasks such as codebase analysis, static slicing, dynamic trace comparison, JADIDA dataflow inspection, LLVM IR inspection, DDX planning, repair validation, and report generation. Each subagent should interact with one or more MCP servers through an MCP client. The MCP servers should expose narrowly scoped capabilities with explicit schemas, permissions, and audit logs.
+
+The conceptual topology is shown below.
+
+```text
+User
+  |
+  v
+GRAIL-DX API and CLI
+  |
+  v
+GRAIL-DX host
+  |
+  +-- ReAct diagnosis subagent
+  |     |
+  |     +-- MCP client
+  |           |
+  |           +-- graph MCP server
+  |           +-- static analysis MCP server
+  |           +-- trace MCP server
+  |           +-- JADIDA MCP server
+  |           +-- LLVM MCP server
+  |           +-- SMT MCP server
+  |           +-- experiment runner MCP server
+  |           +-- repository MCP server
+  |
+  +-- ReAct DDX subagent
+  |
+  +-- ReAct repair subagent
+```
+
+The main MCP capabilities should be grouped by evidence source. A graph MCP server should expose graph slices, neighborhood queries, source to symptom paths, and ranked candidate paths. A static analysis MCP server should expose call graphs, control flow graphs, data flow graphs, def use chains, source locations, bytecode views, and LLVM IR views. A trace MCP server should expose original runs, mutant runs, trace differences, output differences, exceptions, and timeouts. A JADIDA MCP server should expose Java runtime dataflow events and original versus mutant dataflow differences. An SMT MCP server should expose path feasibility checks and constraint validation. An experiment runner MCP server should execute selected DDX experiments in an offline environment and return structured results.
+
+The minimum MCP server interface should expose tools, resources, and prompts. Tools should perform actions such as `getStaticSlice`, `compareOriginalAndMutantTrace`, `getJadidaDataflow`, `checkPathFeasibility`, and `runExperiment`. Resources should expose read only evidence such as source files, trace records, graph snapshots, mutation ledgers, and diagnosis reports. Prompts should expose reusable task templates for codebase analysis, hypothesis ranking, DDX planning, and repair review.
+
+A compact MCP tool definition for querying JADIDA dataflow is shown below.
+
+```json
+{
+  "name": "getJadidaDataflow",
+  "description": "Return Java runtime dataflow events collected by JADIDA for a selected run and source location.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "runId": { "type": "string" },
+      "sourceLocation": { "type": "string" },
+      "maxEvents": { "type": "integer" }
+    },
+    "required": ["runId", "sourceLocation"]
+  }
+}
+```
+
+A ReAct subagent should use MCP calls as evidence acquisition steps. It should first state what evidence is missing, then call the appropriate MCP tool, then update the working diagnosis from the returned result. The model should not proceed from an assumption when a tool can answer the question. If the subagent needs a dataflow fact, it should call the static analysis MCP server or the JADIDA MCP server. If it needs a feasible path, it should call the SMT MCP server. If it needs to distinguish competing hypotheses, it should ask the experiment runner MCP server to execute the selected DDX experiment.
+
+A simplified ReAct trace for a diagnosis subagent is shown below.
+
+```text
+Thought: The symptom is a negative invoice total, so I need the backward dataflow from invoice.total.
+Action: call MCP tool getDataFlow with output invoice.total.
+Observation: invoice.total depends on discountedSubtotal, taxAdjustment, and exemptionAdjustment.
+
+Thought: The top two hypotheses differ in whether the wrong value enters through taxAdjustment or exemptionAdjustment. I need runtime dataflow from the failing run.
+Action: call MCP tool getJadidaDataflow for InvoiceCalculator.java:184.
+Observation: exemptionAdjustment flows into discountedSubtotal before tax is applied.
+
+Thought: I need to check whether this path is feasible under the reported configuration.
+Action: call MCP tool checkPathFeasibility.
+Observation: The path is SAT when taxExempt is true and region is EU.
+
+Thought: The evidence supports the exemption ordering fault. I will rank it above the regional discount hypothesis and propose a DDX experiment.
+```
+
+MCP integration should be implemented behind a Scala 3 abstraction so that GRAIL-DX can call native Scala services, remote MCP servers, or local MCP servers with the same agent code. A minimal client interface is shown below.
+
+```scala
+trait McpClient:
+  def listTools(server: McpServerId): cats.effect.IO[List[McpTool]]
+  def callTool(server: McpServerId, name: String, arguments: io.circe.Json): cats.effect.IO[McpToolResult]
+  def readResource(server: McpServerId, uri: String): cats.effect.IO[McpResource]
+  def getPrompt(server: McpServerId, name: String, arguments: io.circe.Json): cats.effect.IO[McpPrompt]
+```
+
+The `grail-llm` module should depend on this abstraction, not on individual analyzer implementations. The analyzer implementations can live behind MCP servers or direct Scala services. This separation allows GRAIL-DX to run fully local, fully cloud based, or mixed. In a privacy sensitive deployment, the MCP servers can run on the same machine as the source code and only return compact evidence packets to the LLM. In a cloud deployment, the MCP servers can run near the graph database, trace store, CI system, or experiment cluster.
+
+MCP calls should be governed by security rules. Each server should expose only the tools needed by the subagent. Tool calls that mutate state, execute code, run experiments, create patches, or access private repositories should require explicit policy approval. Every MCP request and response should be logged with query identifiers, tool names, arguments, evidence identifiers, timestamps, and subagent identifiers. This audit trail is essential because GRAIL-DX must explain not only what diagnosis it produced, but also which external evidence was used to produce it.
+
+This stage feeds the ReAct codebase analysis agent, the abductive diagnosis agent, the DDX planner, and the repair validator. It also makes the system extensible. New analyzers, telemetry stores, theorem provers, repository providers, or experiment runners can be added as MCP servers without rewriting the core GRAIL-DX reasoning loop.
+
+
 ## Step 11. Implement the ReAct codebase analysis agent
 
 The codebase analysis agent runs during onboarding. Its inputs are the application specification, evidence corpus, static analysis outputs, and the tool registry. Its outputs are a codebase analysis report, a refined application specification, entry point candidates, high value output variables, configuration variables, and initial injection targets.
@@ -567,6 +672,7 @@ The recommended framework stack is shown below.
 | OPAL | JVM bytecode analysis | Scala based bytecode analysis framework |
 | SootUp | Interprocedural analysis | JVM call graph and data flow support |
 | JADIDA | Java runtime dataflow instrumentation | Home grown project for observing dynamic dataflow in Java applications |
+| MCP | External tool protocol | Standardized invocation of analyzers, graph services, trace stores, solvers, and experiment runners from ReAct subagents |
 | ASM | Low level JVM bytecode manipulation | Fine grained probe insertion and instruction rewriting |
 | Byte Buddy | JVM instrumentation | Runtime and build time code instrumentation |
 | Javassist | JVM bytecode manipulation | Source like bytecode editing and agent experiments |
@@ -625,6 +731,6 @@ For GRAIL-DX, the practical rule is straightforward. Use JADIDA when Java runtim
 
 The application specification feeds ingestion, static analysis, testing, and mutation planning. Static analysis produces source graphs, bytecode graphs, LLVM IR graphs, JADIDA dataflow targets, and dependency facts that feed instrumentation and injection selection. Mutation planning produces mutants that feed the runner. Instrumentation produces probes that make runtime traces source aligned. JADIDA produces Java runtime dataflow events that show how values move through selected methods, variables, fields, calls, and returns. Test execution produces traces. Differential analysis turns traces and JADIDA dataflow events into propagation evidence and symptom signatures. Graph construction merges all artifacts into an application specific evidence graph and vector index.
 
-The ReAct agents query this graph through external tools. The codebase analysis agent refines onboarding. The diagnosis agent retrieves evidence and ranks explanations. The DDX agent requests new experiments when hypotheses remain ambiguous. The repair agent proposes and validates fixes. User feedback and new runs flow back into the graph.
+The ReAct agents query this graph through external tools, including MCP servers that expose analyzers, graph services, trace stores, JADIDA dataflow, LLVM IR evidence, symbolic checkers, and experiment runners. The codebase analysis agent refines onboarding. The diagnosis agent retrieves evidence and ranks explanations. The DDX agent requests new experiments when hypotheses remain ambiguous. The repair agent proposes and validates fixes. User feedback and new runs flow back into the graph.
 
 GRAIL-DX therefore becomes a grounded diagnostic system rather than a chatbot with a debugger costume. It uses static analysis, dynamic analysis, fault injection, GraphRAG, symbolic checking, bytecode instrumentation, JADIDA runtime dataflow analysis, LLVM IR analysis, and ReAct prompting as cooperating parts of one pipeline.
