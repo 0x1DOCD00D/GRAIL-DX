@@ -1,11 +1,12 @@
 ThisBuild / organization := "io.github.0x1docd00d"
 ThisBuild / version := "0.1.0-SNAPSHOT"
-ThisBuild / scalaVersion := "3.3.3"
+ThisBuild / scalaVersion := "3.3.3" //Note: In Readme, it is specified as 3.6+
 
 val catsVersion       = "2.12.0"
 val catsEffectVersion = "3.5.7"
 val log4catsVersion   = "2.7.0"
 val munitVersion      = "1.0.2"
+val scalametaVersion  = "4.17.0"
 
 lazy val commonSettings = Seq(
   scalacOptions ++= Seq("-deprecation", "-feature", "-unchecked"),
@@ -24,7 +25,11 @@ def grailModule(name: String) =
     .settings(commonSettings*)
 
 lazy val grailCore       = grailModule("grail-core")
-lazy val grailStatic     = grailModule("grail-static")
+lazy val grailStatic = grailModule("grail-static")
+  .dependsOn(grailCore)
+  .settings(
+    libraryDependencies += "org.scalameta" %% "scalameta" % scalametaVersion
+  )
 lazy val grailJvm        = grailModule("grail-jvm")
 lazy val grailLlvm       = grailModule("grail-llvm")
 lazy val grailJadida     = grailModule("grail-jadida")
